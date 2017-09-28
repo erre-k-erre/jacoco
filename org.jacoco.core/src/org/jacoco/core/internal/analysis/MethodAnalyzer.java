@@ -12,8 +12,10 @@
 package org.jacoco.core.internal.analysis;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.jacoco.core.analysis.ICounter;
@@ -59,6 +61,8 @@ public class MethodAnalyzer extends MethodProbesVisitor
 
 	private final boolean[] probes;
 
+	private final IFilter[] filters;
+
 	private final MethodCoverageImpl coverage;
 
 	private int currentLine = ISourceNode.UNKNOWN_LINE;
@@ -103,10 +107,17 @@ public class MethodAnalyzer extends MethodProbesVisitor
 	public MethodAnalyzer(final String className, final String superClassName,
 			final String name, final String desc, final String signature,
 			final boolean[] probes) {
+		this(className, superClassName, name, desc, signature, probes, FILTERS);
+	}
+
+	MethodAnalyzer(final String className, final String superClassName,
+			final String name, final String desc, final String signature,
+			final boolean[] probes, final IFilter... filters) {
 		super();
 		this.className = className;
 		this.superClassName = superClassName;
 		this.probes = probes;
+		this.filters = filters;
 		this.coverage = new MethodCoverageImpl(name, desc, signature);
 	}
 
@@ -126,11 +137,11 @@ public class MethodAnalyzer extends MethodProbesVisitor
 	@Override
 	public void accept(final MethodNode methodNode,
 			final MethodVisitor methodVisitor) {
-		this.ignored.clear();
-		for (final IFilter filter : FILTERS) {
+		for (final IFilter filter : filters) {
 			filter.filter(className, superClassName, methodNode, this);
 		}
 
+		methodVisitor.visitCode();
 		for (final TryCatchBlockNode n : methodNode.tryCatchBlocks) {
 			n.accept(methodVisitor);
 		}
@@ -143,6 +154,22 @@ public class MethodAnalyzer extends MethodProbesVisitor
 	}
 
 	private final Set<AbstractInsnNode> ignored = new HashSet<AbstractInsnNode>();
+
+	/**
+	 * Instructions that should be merged form disjoint sets. Coverage
+	 * information from instructions of one set will be merged into
+	 * representative instruction of set.
+	 * 
+	 * Each such set is represented as a singly linked list: each element except
+	 * one references another element from the same set, element without
+	 * reference - is a representative of this set.
+	 * 
+	 * This map stores reference (value) for elements of sets (key).
+	 */
+	private final Map<AbstractInsnNode, AbstractInsnNode> merged = new HashMap<AbstractInsnNode, AbstractInsnNode>();
+
+	private final Map<AbstractInsnNode, Instruction> nodeToInstruction = new HashMap<AbstractInsnNode, Instruction>();
+
 	private AbstractInsnNode currentNode;
 
 	public void ignore(final AbstractInsnNode fromInclusive,
@@ -152,6 +179,23 @@ public class MethodAnalyzer extends MethodProbesVisitor
 			ignored.add(i);
 		}
 		ignored.add(toInclusive);
+	}
+
+	private AbstractInsnNode findRepresentative(AbstractInsnNode i) {
+		AbstractInsnNode r = merged.get(i);
+		while (r != null) {
+			i = r;
+			r = merged.get(i);
+		}
+		return i;
+	}
+
+	public void merge(AbstractInsnNode i1, AbstractInsnNode i2) {
+		i1 = findRepresentative(i1);
+		i2 = findRepresentative(i2);
+		if (i1 != i2) {
+			merged.put(i2, i1);
+		}
 	}
 
 	@Override
@@ -175,6 +219,7 @@ public class MethodAnalyzer extends MethodProbesVisitor
 
 	private void visitInsn() {
 		final Instruction insn = new Instruction(currentNode, currentLine);
+		nodeToInstruction.put(currentNode, insn);
 		instructions.add(insn);
 		if (lastInsn != null) {
 			insn.setPredecessor(lastInsn, 0);
@@ -341,6 +386,15 @@ public class MethodAnalyzer extends MethodProbesVisitor
 		// Propagate probe values:
 		for (final CoveredProbe p : coveredProbes) {
 			p.instruction.setCovered(p.branch);
+		}
+		// Merge:
+		for (final Instruction i : instructions) {
+			final AbstractInsnNode m = i.getNode();
+			final AbstractInsnNode r = findRepresentative(m);
+			if (r != m) {
+				ignored.add(m);
+				nodeToInstruction.get(r).merge(i);
+			}
 		}
 		// Report result:
 		coverage.ensureCapacity(firstLine, lastLine);

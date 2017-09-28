@@ -152,4 +152,8 @@ public class StringSwitchJavacFilterTest implements IFilterOutput {
 		this.toInclusive = toInclusive;
 	}
 
+	public void merge(final AbstractInsnNode i1, final AbstractInsnNode i2) {
+		throw new AssertionError();
+	}
+
 }
